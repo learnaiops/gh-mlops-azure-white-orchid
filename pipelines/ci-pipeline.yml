@@ -126,7 +126,7 @@ stages:
                       environment:
                         conda_file: $(System.DefaultWorkingDirectory)/machinelearning/white-orchid/conda.yml
                         image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04
-                      instance_type: Standard_DS2_v2
+                      instance_type: Standard_D2s_v3
                       instance_count: 1
                       EOF
 

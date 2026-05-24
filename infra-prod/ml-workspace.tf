@@ -10,7 +10,7 @@ resource "azurerm_storage_account" "ml" {
 }
 
 resource "azurerm_key_vault" "ml" {
-  name                       = "kv-${local.name_prefix}"
+  name                       = "kv-prod-${random_string.suffix.result}"
   resource_group_name        = azurerm_resource_group.main.name
   location                   = azurerm_resource_group.main.location
   tenant_id                  = data.azurerm_client_config.current.tenant_id

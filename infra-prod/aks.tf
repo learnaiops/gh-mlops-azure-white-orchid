@@ -65,18 +65,30 @@ resource "null_resource" "aml_extension" {
       if [ "$EXTENSION_STATE" = "Succeeded" ]; then
         echo "AML extension already installed."
       else
-        az k8s-extension create \
-          --resource-group "$RG" \
-          --cluster-name "$AKS_NAME" \
-          --cluster-type managedClusters \
-          --name aml-extension \
-          --extension-type Microsoft.AzureML.Kubernetes \
-          --config enableTraining=false \
-                  enableInference=true \
-                  inferenceRouterServiceType=LoadBalancer \
-                  allowInsecureConnections=true \
-                  inferenceLoadBalancerHA=false \
-          --auto-upgrade-minor-version true
+        # Wait for AKS internal extension bridge to be ready before installing.
+        echo "Waiting 120s for AKS extension bridge to initialize..."
+        sleep 120
+
+        INSTALL_ATTEMPT=0
+        INSTALL_MAX=3
+        until [ "$INSTALL_ATTEMPT" -ge "$INSTALL_MAX" ]; do
+          INSTALL_ATTEMPT=$((INSTALL_ATTEMPT + 1))
+          echo "AML extension install attempt $${INSTALL_ATTEMPT}/$${INSTALL_MAX}..."
+          az k8s-extension create \
+            --resource-group "$RG" \
+            --cluster-name "$AKS_NAME" \
+            --cluster-type managedClusters \
+            --name aml-extension \
+            --extension-type Microsoft.AzureML.Kubernetes \
+            --config enableTraining=false \
+                    enableInference=true \
+                    inferenceRouterServiceType=LoadBalancer \
+                    allowInsecureConnections=true \
+                    inferenceLoadBalancerHA=false \
+            --auto-upgrade-minor-version true && break
+          echo "Install attempt $${INSTALL_ATTEMPT} failed; retrying in 60s..."
+          sleep 60
+        done
 
         MAX_WAIT=600
         ELAPSED=0

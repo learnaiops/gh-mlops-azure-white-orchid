@@ -29,9 +29,9 @@ variable "aks_node_vm_size" {
 }
 
 variable "aks_min_node_count" {
-  description = "Minimum number of AKS nodes (autoscaler lower bound)"
+  description = "Minimum number of AKS nodes (autoscaler lower bound). Kept at 2 so the AML extension's ~12-15 pods can schedule immediately on install, avoiding the ARM agent-response timeout that occurs while a single node autoscales."
   type        = number
-  default     = 1
+  default     = 2
 }
 
 variable "aks_max_node_count" {
