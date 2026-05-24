@@ -2,37 +2,61 @@ import { useState } from "react";
 import Header from "./components/Header";
 import RiskForm from "./components/RiskForm";
 import RiskResult from "./components/RiskResult";
+import ModelComparison from "./components/ModelComparison";
 
 export default function App() {
-  const [result, setResult] = useState(null);
+  const [preprodResult, setPreprodResult] = useState(null);
+  const [prodResult, setProdResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
   async function handleSubmit(formData) {
     setLoading(true);
     setError(null);
-    setResult(null);
+    setPreprodResult(null);
+    setProdResult(null);
 
-    try {
-      const response = await fetch("/api/predict", {
+    const [preprod, prod] = await Promise.allSettled([
+      fetch("/api/predict", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(formData),
-      });
+      }).then(async (r) => {
+        if (!r.ok) {
+          const e = await r.json();
+          throw new Error(e.error || `HTTP ${r.status}`);
+        }
+        const data = await r.json();
+        return Array.isArray(data) ? data[0] : data;
+      }),
+      fetch("/api/predict-prod", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(formData),
+      }).then(async (r) => {
+        if (!r.ok) {
+          const e = await r.json();
+          throw new Error(e.error || `HTTP ${r.status}`);
+        }
+        const data = await r.json();
+        return Array.isArray(data) ? data[0] : data;
+      }),
+    ]);
 
-      if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || `HTTP ${response.status}`);
-      }
+    setLoading(false);
 
-      const data = await response.json();
-      setResult(Array.isArray(data) ? data[0] : data);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
+    if (preprod.status === "fulfilled") {
+      setPreprodResult(preprod.value);
+    } else {
+      setError(`Pre-prod: ${preprod.reason?.message}`);
+    }
+
+    if (prod.status === "fulfilled") {
+      setProdResult(prod.value);
     }
   }
+
+  const bothLoaded = preprodResult && prodResult;
 
   return (
     <div className="app">
@@ -52,6 +76,7 @@ export default function App() {
             Enter a customer profile and our gradient boosting model —
             trained on health, lifestyle, and claims data — returns an
             instant risk decision with probability score.
+            Results are shown from both pre-prod and prod endpoints simultaneously.
           </p>
         </div>
       </div>
@@ -59,18 +84,22 @@ export default function App() {
       <main className="main-content">
         <div className="container">
           <RiskForm onSubmit={handleSubmit} loading={loading} />
+
           {error && (
             <div className="error-banner" role="alert">
               <span>⚠</span>
               <span>{error}</span>
             </div>
           )}
-          {result && (
+
+          {bothLoaded ? (
+            <ModelComparison preprod={preprodResult} prod={prodResult} />
+          ) : preprodResult ? (
             <div className="result-section">
-              <div className="result-section-label">Assessment Result</div>
-              <RiskResult result={result} />
+              <div className="result-section-label">Pre-Prod Assessment</div>
+              <RiskResult result={preprodResult} env="pre-prod" />
             </div>
-          )}
+          ) : null}
         </div>
       </main>
 

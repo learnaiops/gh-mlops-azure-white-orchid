@@ -44,13 +44,13 @@ resource "azurerm_linux_web_app" "ui" {
     SCM_DO_BUILD_DURING_DEPLOYMENT = "true"
     WEBSITE_NODE_DEFAULT_VERSION   = "~20"
 
-    # Non-secret — stored as plain value
-    ML_ENDPOINT_URL = "https://ep-${local.name_prefix}.swedencentral.inference.ml.azure.com/score"
+    # Non-secret — stored as plain values
+    ML_ENDPOINT_URL      = "https://ep-${local.name_prefix}.swedencentral.inference.ml.azure.com/score"
+    PROD_ML_ENDPOINT_URL = var.prod_ml_endpoint_url != "" ? var.prod_ml_endpoint_url : "NOT_YET_SET"
 
     # Secrets — resolved from Key Vault at runtime by the managed identity.
-    # The @Microsoft.KeyVault(...) syntax is replaced by App Service with the actual
-    # secret value before the Node.js process ever reads the environment variable.
-    ML_ENDPOINT_KEY = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.ml_endpoint_key.versionless_id})"
+    ML_ENDPOINT_KEY      = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.ml_endpoint_key.versionless_id})"
+    PROD_ML_ENDPOINT_KEY = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.prod_ml_endpoint_key.versionless_id})"
 
     APPLICATIONINSIGHTS_CONNECTION_STRING = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.appinsights_connection_string.versionless_id})"
     APPINSIGHTS_INSTRUMENTATIONKEY        = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.appinsights_instrumentation_key.versionless_id})"
@@ -67,6 +67,18 @@ resource "azurerm_linux_web_app" "ui" {
 resource "azurerm_key_vault_secret" "ml_endpoint_key" {
   name         = "ml-endpoint-key"
   value        = var.ml_endpoint_key != "" ? var.ml_endpoint_key : "NOT_YET_SET"
+  key_vault_id = azurerm_key_vault.ml.id
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+
+  depends_on = [azurerm_role_assignment.terraform_kv_secrets_officer]
+}
+
+resource "azurerm_key_vault_secret" "prod_ml_endpoint_key" {
+  name         = "prod-ml-endpoint-key"
+  value        = "NOT_YET_SET"
   key_vault_id = azurerm_key_vault.ml.id
 
   lifecycle {

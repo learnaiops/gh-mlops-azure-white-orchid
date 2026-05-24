@@ -1,0 +1,222 @@
+trigger:
+  - main
+
+pool: "blue-moon-hub-linux"
+
+parameters:
+  - name: modelVersion
+    displayName: "Model version to promote (leave blank for latest)"
+    type: string
+    default: ""
+
+variables:
+  # Pre-prod workspace — source of the validated model
+  preProdResourceGroup: "rg-white-orchid-8bx7s6"
+  preProdMlWorkspace: "mlw-white-orchid-8bx7s6"
+  # Prod workspace and AKS — values from: cd infra-prod && terraform output
+  prodResourceGroup: "rg-white-orchid-prod-31okr7"
+  prodMlWorkspace: "mlw-white-orchid-prod-31okr7"
+  prodComputeName: "aks-inf-prod"
+  prodEndpointName: "ep-prod-white-orchid"
+  prodDeploymentName: "dp-prod-blue"
+  modelName: "white-orchid-risk-model"
+  condaFile: "$(System.DefaultWorkingDirectory)/machinelearning/white-orchid/conda.yml"
+  mlDir: "$(System.DefaultWorkingDirectory)/machinelearning/white-orchid"
+
+stages:
+  - stage: PromoteModel
+    displayName: "Promote model from pre-prod to prod workspace"
+    jobs:
+      - job: Promote
+        displayName: "Copy model artifacts to prod ML workspace"
+        steps:
+          - checkout: self
+
+          - task: AzureCLI@2
+            displayName: "Register model in prod workspace"
+            inputs:
+              azureSubscription: "sp-blue-moon"
+              scriptType: "bash"
+              scriptLocation: "inlineScript"
+              inlineScript: |
+                set -e
+                az extension add -n ml -y
+
+                # Resolve version: use the supplied parameter or fall back to latest
+                if [ -n "${{ parameters.modelVersion }}" ]; then
+                  MODEL_VERSION="${{ parameters.modelVersion }}"
+                else
+                  MODEL_VERSION=$(az ml model list \
+                    --resource-group $(preProdResourceGroup) \
+                    --workspace-name $(preProdMlWorkspace) \
+                    --name $(modelName) \
+                    --query "[0].version" -o tsv)
+                fi
+
+                if [ -z "$MODEL_VERSION" ] || [ "$MODEL_VERSION" = "None" ]; then
+                  echo "##[error]Model '$(modelName)' not found in pre-prod workspace"
+                  exit 1
+                fi
+                echo "Promoting $(modelName) version $MODEL_VERSION"
+
+                # Check whether this version is already registered in prod
+                EXISTING=$(az ml model show \
+                  --resource-group $(prodResourceGroup) \
+                  --workspace-name $(prodMlWorkspace) \
+                  --name $(modelName) \
+                  --version "$MODEL_VERSION" \
+                  --query version -o tsv 2>/dev/null || echo "")
+
+                if [ -n "$EXISTING" ]; then
+                  echo "Model version $MODEL_VERSION already exists in prod workspace — skipping registration"
+                else
+                  az ml model download \
+                    --resource-group $(preProdResourceGroup) \
+                    --workspace-name $(preProdMlWorkspace) \
+                    --name $(modelName) \
+                    --version "$MODEL_VERSION" \
+                    --download-path /tmp/promoted_model
+
+                  az ml model create \
+                    --resource-group $(prodResourceGroup) \
+                    --workspace-name $(prodMlWorkspace) \
+                    --name $(modelName) \
+                    --version "$MODEL_VERSION" \
+                    --path "/tmp/promoted_model/$(modelName)" \
+                    --type custom_model \
+                    --description "Promoted from pre-prod v$MODEL_VERSION"
+
+                  echo "Model registered in prod workspace as version $MODEL_VERSION"
+                fi
+
+                echo "##vso[task.setvariable variable=PROMOTED_MODEL_VERSION;isOutput=true]$MODEL_VERSION"
+            name: promote
+
+  - stage: DeployProd
+    displayName: "Deploy to AKS Kubernetes endpoint"
+    dependsOn: PromoteModel
+    variables:
+      MODEL_VERSION: $[ stageDependencies.PromoteModel.Promote.outputs['promote.PROMOTED_MODEL_VERSION'] ]
+    jobs:
+      - deployment: DeployAKS
+        displayName: "Create/update Kubernetes online endpoint"
+        environment: "production-aks"
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: AzureCLI@2
+                  displayName: "Deploy model to AKS endpoint"
+                  inputs:
+                    azureSubscription: "sp-blue-moon"
+                    scriptType: "bash"
+                    scriptLocation: "inlineScript"
+                    inlineScript: |
+                      set -e
+                      az extension add -n ml -y
+
+                      echo "Deploying $(modelName) version $(MODEL_VERSION) to AKS prod"
+
+                      # Create the Kubernetes online endpoint if it does not exist yet
+                      if ! az ml online-endpoint show \
+                            --resource-group $(prodResourceGroup) \
+                            --workspace-name $(prodMlWorkspace) \
+                            --name $(prodEndpointName) &>/dev/null; then
+                        EP_NAME="$(prodEndpointName)"
+                        EP_COMPUTE="azureml:$(prodComputeName)"
+                        printf '%s\n' \
+                          '$schema: https://azuremlschemas.azureedge.net/latest/kubernetesOnlineEndpoint.schema.json' \
+                          "name: $EP_NAME" \
+                          "compute: $EP_COMPUTE" \
+                          "auth_mode: key" \
+                          > prod_endpoint.yml
+                        cat prod_endpoint.yml
+                        az ml online-endpoint create \
+                          --resource-group $(prodResourceGroup) \
+                          --workspace-name $(prodMlWorkspace) \
+                          --file prod_endpoint.yml
+                      fi
+
+                      DP_NAME="$(prodDeploymentName)"
+                      EP_NAME="$(prodEndpointName)"
+                      MODEL_REF="azureml:$(modelName):$(MODEL_VERSION)"
+                      CODE_PATH="$(mlDir)"
+                      CONDA_PATH="$(condaFile)"
+
+                      printf '%s\n' \
+                        '$schema: https://azuremlschemas.azureedge.net/latest/kubernetesOnlineDeployment.schema.json' \
+                        "name: $DP_NAME" \
+                        "type: kubernetes" \
+                        "endpoint_name: $EP_NAME" \
+                        "model: $MODEL_REF" \
+                        "code_configuration:" \
+                        "  code: $CODE_PATH" \
+                        "  scoring_script: score.py" \
+                        "environment:" \
+                        "  conda_file: $CONDA_PATH" \
+                        "  image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04" \
+                        "instance_type: defaultinstancetype" \
+                        "instance_count: 2" \
+                        > prod_deployment.yml
+
+                      echo "--- prod_deployment.yml ---"
+                      cat prod_deployment.yml
+                      echo "---------------------------"
+
+                      if az ml online-deployment show \
+                          --resource-group $(prodResourceGroup) \
+                          --workspace-name $(prodMlWorkspace) \
+                          --endpoint-name $(prodEndpointName) \
+                          --name $(prodDeploymentName) &>/dev/null; then
+                        echo "Deployment exists — updating"
+                        az ml online-deployment update \
+                          --resource-group $(prodResourceGroup) \
+                          --workspace-name $(prodMlWorkspace) \
+                          --file prod_deployment.yml
+                      else
+                        echo "Creating new deployment"
+                        az ml online-deployment create \
+                          --resource-group $(prodResourceGroup) \
+                          --workspace-name $(prodMlWorkspace) \
+                          --file prod_deployment.yml \
+                          --all-traffic
+                      fi
+
+                      SCORING_URI=$(az ml online-endpoint show \
+                        --resource-group $(prodResourceGroup) \
+                        --workspace-name $(prodMlWorkspace) \
+                        --name $(prodEndpointName) \
+                        --query scoring_uri -o tsv)
+                      echo "Prod endpoint scoring URI: $SCORING_URI"
+                      echo "##vso[task.setvariable variable=PROD_SCORING_URI]$SCORING_URI"
+
+                - task: AzureCLI@2
+                  displayName: "Smoke test prod endpoint"
+                  inputs:
+                    azureSubscription: "sp-blue-moon"
+                    scriptType: "bash"
+                    scriptLocation: "inlineScript"
+                    inlineScript: |
+                      set -e
+                      EP_KEY=$(az ml online-endpoint get-credentials \
+                        --resource-group $(prodResourceGroup) \
+                        --workspace-name $(prodMlWorkspace) \
+                        --name $(prodEndpointName) \
+                        --query primaryKey -o tsv)
+
+                      SCORING_URI=$(az ml online-endpoint show \
+                        --resource-group $(prodResourceGroup) \
+                        --workspace-name $(prodMlWorkspace) \
+                        --name $(prodEndpointName) \
+                        --query scoring_uri -o tsv)
+
+                      RESPONSE=$(curl -sf -X POST "$SCORING_URI" \
+                        -H "Content-Type: application/json" \
+                        -H "Authorization: Bearer $EP_KEY" \
+                        -d '{"input_data":{"columns":["age","bmi","smoker","chronic_conditions","annual_income","exercise_freq_per_week","alcohol_units_per_week","num_claims_last_year","family_history","region"],"data":[[35,25.0,0,0,60000,3,4,0,0,"North"]]}}')
+
+                      echo "Smoke test response: $RESPONSE"
+                      echo "$RESPONSE" | grep -q "risk_probability" || { echo "##[error]Smoke test failed — unexpected response"; exit 1; }
+                      echo "Smoke test passed."

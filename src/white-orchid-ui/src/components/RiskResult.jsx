@@ -1,12 +1,13 @@
-export default function RiskResult({ result }) {
+export default function RiskResult({ result, env = "pre-prod" }) {
   const isHighRisk = result.high_risk;
   const probability = result.risk_probability ?? 0;
   const pct = Math.round(probability * 100);
   const riskClass = isHighRisk ? "high-risk" : "low-risk";
+  const isProd = env === "prod";
 
   return (
     <div>
-      <div className={`result-banner ${riskClass}`}>
+      <div className={`result-banner ${riskClass}${isProd ? " prod-banner" : ""}`}>
         <span className="result-icon">{isHighRisk ? "⚠️" : "✅"}</span>
         <div>
           <div className="result-title">
@@ -72,12 +73,14 @@ export default function RiskResult({ result }) {
               <div className="detail-value">v{result.model_version ?? "—"}</div>
             </div>
             <div className="detail-item">
-              <div className="detail-label">Algorithm</div>
-              <div className="detail-value">Gradient Boosting</div>
+              <div className="detail-label">Environment</div>
+              <div className={`detail-value env-tag ${isProd ? "env-prod" : "env-preprod"}`}>
+                {isProd ? "Prod · AKS" : "Pre-Prod · Managed"}
+              </div>
             </div>
             <div className="detail-item">
-              <div className="detail-label">Threshold</div>
-              <div className="detail-value">50% probability</div>
+              <div className="detail-label">Algorithm</div>
+              <div className="detail-value">Gradient Boosting</div>
             </div>
           </div>
         </div>

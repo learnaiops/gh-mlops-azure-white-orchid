@@ -17,6 +17,12 @@ variable "ml_endpoint_key" {
   default     = ""
 }
 
+variable "prod_ml_endpoint_url" {
+  description = "Scoring URI of the prod AKS endpoint (set after infra-prod apply + model-promote pipeline)"
+  type        = string
+  default     = ""
+}
+
 variable "app_service_sku" {
   description = "SKU for the App Service Plan"
   type        = string
