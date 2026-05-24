@@ -1,0 +1,93 @@
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - src/**
+
+pool: "blue-moon-hub-linux"
+
+variables:
+  resourceGroup: 'rg-white-orchid-8bx7s6'
+  mlWorkspace: 'mlw-white-orchid-8bx7s6'
+  endpointName: 'ep-white-orchid-8bx7s6'
+  webAppName: 'app-white-orchid-8bx7s6'
+  storageAccount: 'stwhiteorchid8bx7s6'
+
+stages:
+  - stage: DeployUI
+    displayName: 'Build & Deploy React UI'
+    jobs:
+      - deployment: DeployUI
+        displayName: 'Build & Deploy UI to Web App'
+        environment: 'production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: NodeTool@0
+                  displayName: 'Use Node 20.x'
+                  inputs:
+                    versionSpec: '20.x'
+
+                - script: |
+                    set -e
+                    cd $(System.DefaultWorkingDirectory)/src
+                    npm install
+                    npm run build
+                  displayName: 'Build React App'
+
+                - task: AzureCLI@2
+                  displayName: 'Upload & Deploy via Run From Package'
+                  inputs:
+                    azureSubscription: 'sp-blue-moon'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      set -e
+                      cd $(System.DefaultWorkingDirectory)/src
+
+                      # Package build output + server
+                      zip -r deploy.zip build/ server.js package.json
+
+                      # Upload to blob storage
+                      az storage blob upload \
+                        --account-name $(storageAccount) \
+                        --container-name data \
+                        --name ui/deploy.zip \
+                        --file deploy.zip \
+                        --overwrite \
+                        --auth-mode login
+
+                      # Generate 1-year SAS URL using account key (user delegation SAS is capped at 7 days)
+                      STORAGE_KEY=$(az storage account keys list \
+                        --resource-group $(resourceGroup) \
+                        --account-name $(storageAccount) \
+                        --query '[0].value' -o tsv)
+                      EXPIRY=$(date -u -d '+1 year' '+%Y-%m-%dT%H:%MZ')
+                      SAS_URL=$(az storage blob generate-sas \
+                        --account-name $(storageAccount) \
+                        --container-name data \
+                        --name ui/deploy.zip \
+                        --permissions r \
+                        --expiry "$EXPIRY" \
+                        --full-uri \
+                        --account-key "$STORAGE_KEY" \
+                        --output tsv)
+
+                      # Point the web app at the new package.
+                      # ML_ENDPOINT_KEY is already wired via Key Vault reference in Terraform — do not overwrite it here.
+                      az webapp config appsettings set \
+                        --resource-group $(resourceGroup) \
+                        --name $(webAppName) \
+                        --settings \
+                          WEBSITE_RUN_FROM_PACKAGE="$SAS_URL"
+
+                      az webapp restart \
+                        --resource-group $(resourceGroup) \
+                        --name $(webAppName)
+
+                      echo "UI deployed: https://$(webAppName).azurewebsites.net"

@@ -40,9 +40,14 @@ output "key_vault_uri" {
   value = azurerm_key_vault.ml.vault_uri
 }
 
-output "web_app_principal_id" {
-  description = "Object ID of the web app's system-assigned managed identity — used in KV role assignment"
-  value       = azurerm_linux_web_app.ui.identity[0].principal_id
+output "webapp_managed_identity_principal_id" {
+  description = "Object ID of the user-assigned managed identity used by the web app for Key Vault access"
+  value       = azurerm_user_assigned_identity.webapp.principal_id
+}
+
+output "webapp_managed_identity_client_id" {
+  description = "Client ID of the user-assigned managed identity (useful for SDK-based KV access)"
+  value       = azurerm_user_assigned_identity.webapp.client_id
 }
 
 output "post_deploy_instructions" {
