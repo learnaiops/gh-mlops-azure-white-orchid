@@ -6,12 +6,13 @@ resource "azurerm_kubernetes_cluster" "main" {
   sku_tier            = "Standard"
 
   default_node_pool {
-    name                 = "system"
-    vm_size              = var.aks_node_vm_size
-    min_count            = var.aks_min_node_count
-    max_count            = var.aks_max_node_count
-    auto_scaling_enabled = true
-    vnet_subnet_id       = azurerm_subnet.aks.id
+    name                        = "system"
+    vm_size                     = var.aks_node_vm_size
+    min_count                   = var.aks_min_node_count
+    max_count                   = var.aks_max_node_count
+    auto_scaling_enabled        = true
+    vnet_subnet_id              = azurerm_subnet.aks.id
+    temporary_name_for_rotation = "systmp"
 
     upgrade_settings {
       max_surge = "33%"

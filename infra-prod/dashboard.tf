@@ -21,7 +21,7 @@ resource "azurerm_portal_dashboard" "main" {
               settings = {
                 content = {
                   settings = {
-                    content  = "## White Orchid · Production Model Monitor\nAKS Kubernetes endpoint · swedencentral · drift monitoring enabled"
+                    content  = "## White Orchid · Production Model Monitor\nAKS Kubernetes endpoint · westeurope · drift monitoring enabled"
                     title    = ""
                     subtitle = ""
                     markdownSource = 1

@@ -1,7 +1,7 @@
 variable "location" {
   description = "Azure region for all resources"
   type        = string
-  default     = "swedencentral"
+  default     = "westeurope"
 }
 
 variable "project" {
@@ -23,9 +23,9 @@ variable "service_connection_client_id" {
 }
 
 variable "aks_node_vm_size" {
-  description = "VM size for the AKS inference node pool"
+  description = "VM size for the AKS inference node pool. Standard_D2s_v3 (2 vCPU) keeps 2 nodes within the 4-vCPU DSv3-family quota."
   type        = string
-  default     = "Standard_D4s_v3"
+  default     = "Standard_D2s_v3"
 }
 
 variable "aks_min_node_count" {
@@ -35,9 +35,9 @@ variable "aks_min_node_count" {
 }
 
 variable "aks_max_node_count" {
-  description = "Maximum number of AKS nodes (autoscaler upper bound)"
+  description = "Maximum number of AKS nodes (autoscaler upper bound). Capped at 2 so 2x Standard_D2s_v3 (4 vCPU) stays within the 4-vCPU DSv3-family quota."
   type        = number
-  default     = 3
+  default     = 2
 }
 
 variable "aks_compute_name" {
