@@ -52,7 +52,7 @@ stages:
 
                       # Install production dependencies, then package
                       npm install --omit=dev
-                      zip -r deploy.zip build/ server.js package.json node_modules/
+                      zip -r deploy.zip dist/ server.js package.json node_modules/
 
                       # Upload to blob storage
                       az storage blob upload \
