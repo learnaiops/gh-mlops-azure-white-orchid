@@ -47,7 +47,15 @@ app.post("/api/predict", async (req, res) => {
       },
       timeout: 30000,
     });
-    res.json(response.data);
+
+    // Azure ML wraps the run() return value as a JSON string when the scoring
+    // script returns json.dumps(...) instead of a plain dict/list. Parse it
+    // so the browser receives a proper JSON array, not a quoted string.
+    let payload = response.data;
+    if (typeof payload === "string") {
+      try { payload = JSON.parse(payload); } catch (_) {}
+    }
+    res.json(payload);
   } catch (err) {
     const status = err.response?.status || 502;
     const message = err.response?.data || err.message;

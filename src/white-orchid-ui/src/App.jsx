@@ -34,42 +34,49 @@ export default function App() {
     }
   }
 
-  function handleReset() {
-    setResult(null);
-    setError(null);
-  }
-
   return (
     <div className="app">
       <Header />
+
+      <div className="hero">
+        <div className="hero-inner">
+          <div className="hero-tag">
+            <span className="dot" />
+            AI-Powered Underwriting
+          </div>
+          <h1>
+            Predict insurance risk<br />
+            with <span>machine learning</span>
+          </h1>
+          <p>
+            Enter a customer profile and our gradient boosting model —
+            trained on health, lifestyle, and claims data — returns an
+            instant risk decision with probability score.
+          </p>
+        </div>
+      </div>
+
       <main className="main-content">
         <div className="container">
-          {!result ? (
-            <>
-              <div className="page-intro">
-                <h2>Health Insurance Risk Assessment</h2>
-                <p>
-                  Enter the customer's details below to predict their insurance
-                  risk profile. This tool uses a machine learning model trained
-                  on health and lifestyle factors.
-                </p>
-              </div>
-              <RiskForm onSubmit={handleSubmit} loading={loading} />
-              {error && (
-                <div className="error-banner" role="alert">
-                  <span className="error-icon">⚠</span>
-                  <span>{error}</span>
-                </div>
-              )}
-            </>
-          ) : (
-            <RiskResult result={result} onReset={handleReset} />
+          <RiskForm onSubmit={handleSubmit} loading={loading} />
+          {error && (
+            <div className="error-banner" role="alert">
+              <span>⚠</span>
+              <span>{error}</span>
+            </div>
+          )}
+          {result && (
+            <div className="result-section">
+              <div className="result-section-label">Assessment Result</div>
+              <RiskResult result={result} />
+            </div>
           )}
         </div>
       </main>
+
       <footer className="footer">
         <div className="container">
-          <p>© 2024 White Orchid — Powered by Azure ML · For demonstration purposes only</p>
+          <p>© 2025 White Orchid · AI Risk Intelligence · Powered by Azure ML · For demonstration purposes only</p>
         </div>
       </footer>
     </div>

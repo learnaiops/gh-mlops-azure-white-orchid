@@ -1,4 +1,4 @@
-export default function RiskResult({ result, onReset }) {
+export default function RiskResult({ result }) {
   const isHighRisk = result.high_risk;
   const probability = result.risk_probability ?? 0;
   const pct = Math.round(probability * 100);
@@ -28,8 +28,10 @@ export default function RiskResult({ result, onReset }) {
         <div className="card-body">
           <div className="prob-section">
             <div className="prob-label">
-              <span>Risk Probability</span>
-              <span>{pct}%</span>
+              <span className="prob-label-text">Risk Probability</span>
+              <span className="prob-label-pct" style={{ color: isHighRisk ? "var(--rose)" : "var(--emerald)" }}>
+                {pct}%
+              </span>
             </div>
             <div className="prob-bar-track">
               <div
@@ -50,20 +52,33 @@ export default function RiskResult({ result, onReset }) {
               <div className="detail-label">Risk Probability</div>
               <div className="detail-value">{(probability * 100).toFixed(1)}%</div>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="card model-info-card">
+        <div className="card-header">
+          <span>🤖</span>
+          <h3>Model Details</h3>
+        </div>
+        <div className="card-body">
+          <div className="detail-grid">
             <div className="detail-item">
-              <div className="detail-label">Model</div>
+              <div className="detail-label">Model Name</div>
               <div className="detail-value">{result.model_name ?? "—"}</div>
             </div>
             <div className="detail-item">
               <div className="detail-label">Model Version</div>
               <div className="detail-value">v{result.model_version ?? "—"}</div>
             </div>
-          </div>
-
-          <div className="result-actions">
-            <button className="btn btn-outline" onClick={onReset}>
-              ← New Assessment
-            </button>
+            <div className="detail-item">
+              <div className="detail-label">Algorithm</div>
+              <div className="detail-value">Gradient Boosting</div>
+            </div>
+            <div className="detail-item">
+              <div className="detail-label">Threshold</div>
+              <div className="detail-value">50% probability</div>
+            </div>
           </div>
         </div>
       </div>

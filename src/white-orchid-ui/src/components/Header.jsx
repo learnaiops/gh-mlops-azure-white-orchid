@@ -6,10 +6,13 @@ export default function Header() {
           <div className="logo-mark">WO</div>
           <div>
             <span className="logo-text">White Orchid</span>
-            <span className="logo-sub">Health Insurance Risk</span>
+            <span className="logo-sub">AI Risk Intelligence</span>
           </div>
         </a>
-        <span className="header-badge">Azure ML · Pre-Prod</span>
+        <div className="header-right">
+          <span className="header-badge">AI-Powered</span>
+          <span className="header-env">Pre-Prod · Azure ML</span>
+        </div>
       </div>
     </header>
   );
