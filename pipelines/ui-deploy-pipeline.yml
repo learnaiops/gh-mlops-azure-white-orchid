@@ -35,7 +35,7 @@ stages:
 
                 - script: |
                     set -e
-                    cd $(System.DefaultWorkingDirectory)/src
+                    cd $(System.DefaultWorkingDirectory)/src/white-orchid-ui
                     npm install
                     npm run build
                   displayName: 'Build React App'
@@ -48,7 +48,7 @@ stages:
                     scriptLocation: 'inlineScript'
                     inlineScript: |
                       set -e
-                      cd $(System.DefaultWorkingDirectory)/src
+                      cd $(System.DefaultWorkingDirectory)/src/white-orchid-ui
 
                       # Package build output + server
                       zip -r deploy.zip build/ server.js package.json
