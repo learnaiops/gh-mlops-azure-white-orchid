@@ -1,0 +1,29 @@
+# Azure ML command job — trains the health insurance risk classifier.
+# Submit manually with:
+#   az ml job create -f train-job.yml --stream -g rg-white-orchid-8bx7s6 -w mlw-white-orchid-8bx7s6
+# The pipeline submits this automatically and registers the model from job output.
+$schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
+
+display_name: white-orchid-risk-train
+experiment_name: white-orchid-risk
+
+code: .
+command: >-
+  python train.py
+  --data ${{inputs.data}}
+  --out ${{outputs.model_dir}}
+
+inputs:
+  data:
+    type: uri_file
+    path: azureml://datastores/health_insurance_risk_dataset_data/paths/health_insurance_risk/health_insurance_risk_dataset.csv
+
+outputs:
+  model_dir:
+    type: uri_folder
+
+environment:
+  conda_file: train-conda.yml
+  image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04
+
+compute: azureml:cpu-cluster

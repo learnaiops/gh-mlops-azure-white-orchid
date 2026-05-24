@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(terraform fmt:*)",
+      "Bash(terraform validate:*)",
+      "Bash(terraform plan:*)",
+      "Bash(terraform init:*)",
+      "Bash(terraform providers:*)",
+      "Bash(terraform output:*)",
+      "Bash(terraform state list:*)",
+      "Bash(terraform version:*)",
+      "Bash(tflint:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)"
+    ],
+    "deny": [
+      "Read(*.tfvars)",
+      "Read(*.tfvars.json)",
+      "Read(**/*.auto.tfvars)",
+      "Read(.terraform/**)"
+    ],
+    "ask": [
+      "Bash(terraform apply:*)",
+      "Bash(terraform destroy:*)"
+    ]
+  }
+}

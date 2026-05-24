@@ -1,3 +1,6 @@
+# Claude Code personal settings (keep .claude/settings.json shared)
+.claude/settings.local.json
+
 # Local .terraform directories
 .terraform/
 
@@ -42,3 +45,24 @@ terraform.rc
 # Optional: ignore plan files saved before destroying Terraform configuration
 # Uncomment the line below if you want to ignore planout files.
 # planout
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+dist/
+
+# ML artifacts (trained locally — registered to AML instead)
+machinelearning/white-orchid/models/
+
+# Node / UI
+src/white-orchid-ui/node_modules/
+src/white-orchid-ui/dist/
+src/white-orchid-ui/.env
+src/white-orchid-ui/.env.local
+
+# macOS
+.DS_Store
