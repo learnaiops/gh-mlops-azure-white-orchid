@@ -11,8 +11,8 @@ parameters:
 
 variables:
   # Pre-prod workspace — source of the validated model
-  preProdResourceGroup: "rg-white-orchid-mlph0r"
-  preProdMlWorkspace: "mlw-white-orchid-mlph0r"
+  preProdResourceGroup: "rg-white-orchid-8bx7s6"
+  preProdMlWorkspace: "mlw-white-orchid-8bx7s6"
   # Prod workspace and AKS — values from: cd infra-prod && terraform output
   prodResourceGroup: "rg-white-orchid-prod-mlph0r"
   prodMlWorkspace: "mlw-white-orchid-prod-mlph0r"
