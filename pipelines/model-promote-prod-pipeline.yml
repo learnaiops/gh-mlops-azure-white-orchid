@@ -18,6 +18,8 @@ variables:
   prodComputeName: "aks-inf-prod"
   prodEndpointName: "ep-prod-white-orchid"
   prodDeploymentName: "dp-prod-blue"
+  # App Insights backing the prod LA workspace — score.py logs predictions here
+  prodAppInsightsName: "appi-white-orchid-prod-mlph0r"
   modelName: "white-orchid-risk-model"
   condaFile: "$(System.DefaultWorkingDirectory)/machinelearning/white-orchid/conda.yml"
   mlDir: "$(System.DefaultWorkingDirectory)/machinelearning/white-orchid"
@@ -144,6 +146,19 @@ stages:
                       CODE_PATH="$(mlDir)"
                       CONDA_PATH="$(condaFile)"
 
+                      # Fetch the prod App Insights connection string so score.py can
+                      # emit prediction telemetry (drift monitoring depends on this).
+                      # az resource show is core CLI — no extension needed.
+                      AI_CONN=$(az resource show \
+                        --resource-group $(prodResourceGroup) \
+                        --name $(prodAppInsightsName) \
+                        --resource-type microsoft.insights/components \
+                        --query properties.ConnectionString -o tsv)
+                      if [ -z "$AI_CONN" ]; then
+                        echo "ERROR: could not resolve App Insights connection string for $(prodAppInsightsName)" >&2
+                        exit 1
+                      fi
+
                       printf '%s\n' \
                         '$schema: https://azuremlschemas.azureedge.net/latest/kubernetesOnlineDeployment.schema.json' \
                         "name: $DP_NAME" \
@@ -158,10 +173,15 @@ stages:
                         "  image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04" \
                         "instance_type: defaultinstancetype" \
                         "instance_count: 2" \
+                        "environment_variables:" \
+                        "  APPLICATIONINSIGHTS_CONNECTION_STRING: \"$AI_CONN\"" \
                         > prod_deployment.yml
 
+                      # Print the YAML for debugging, but redact the connection string
+                      # so the instrumentation key never lands in pipeline logs.
                       echo "--- prod_deployment.yml ---"
-                      cat prod_deployment.yml
+                      grep -v APPLICATIONINSIGHTS_CONNECTION_STRING prod_deployment.yml
+                      echo "  APPLICATIONINSIGHTS_CONNECTION_STRING: <redacted>"
                       echo "---------------------------"
 
                       if az ml online-deployment show \

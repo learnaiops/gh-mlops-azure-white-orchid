@@ -8,13 +8,15 @@
 #   - Only fires if >= 20 predictions were logged in the window
 #     (prevents false alarms during low-traffic periods)
 #
-# Data source: App Insights events emitted by score.py on every scoring
-# request. Since App Insights is workspace-based, events flow into the
-# Log Analytics workspace as the AppEvents table (not customEvents —
-# that name only resolves when scoped to an AI resource, not a LA workspace).
+# Data source: telemetry emitted by score.py on every scoring request via
+# opencensus AzureLogHandler. That handler sends *log records* (trace
+# telemetry), so in a workspace-based Log Analytics the data lands in the
+# AppTraces table — the message string is in `Message` and the custom
+# dimensions in `Properties`. (It is NOT in AppEvents/customEvents — those
+# are only populated by AzureEventHandler or track_event().)
 #
 # Alert chain:
-#   score.py → App Insights customEvents → Log Analytics
+#   score.py → App Insights traces → Log Analytics (AppTraces)
 #   → this scheduled query rule
 #   → action group (email + optional Teams webhook)
 #   → [optional] Logic App → ADO drift-remediation-pipeline.yml
@@ -34,8 +36,8 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "prediction_drift" {
 
   criteria {
     query = <<-KQL
-      AppEvents
-      | where Name == "risk_prediction"
+      AppTraces
+      | where Message == "risk_prediction"
       | extend risk_prob = todouble(Properties["risk_probability"])
       | extend bmi_val   = todouble(Properties["bmi"])
       | extend age_val   = todouble(Properties["age"])
