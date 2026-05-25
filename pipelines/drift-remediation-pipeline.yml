@@ -200,23 +200,24 @@ print(score)
           - checkout: self
 
           - script: |
-              sudo apt-get install -y python3-pip --quiet
-              python3 -m pip install numpy pandas scikit-learn joblib --quiet
+              python3 -m venv $(Agent.TempDirectory)/venv
+              $(Agent.TempDirectory)/venv/bin/pip install numpy pandas scikit-learn joblib --quiet
             displayName: "Install Python dependencies"
 
           - script: |
               set -e
+              PYTHON="$(Agent.TempDirectory)/venv/bin/python"
               echo "Generating augmented training data (original + drift-shifted records)..."
 
               # Augment: generate 500 shifted records with pseudo-labels
-              python3 "$(mlDir)/simulate_drift.py" \
+              "$PYTHON" "$(mlDir)/simulate_drift.py" \
                 --mode augment \
                 --intensity severe \
                 --count 500 \
                 --output /tmp/augmented_drift.csv
 
               # Combine with original training data (70% original, 30% augmented)
-              python3 - <<PYEOF
+              "$PYTHON" - <<PYEOF
 import pandas as pd, os
 
 original = pd.read_csv("$(mlDir)/data/health_insurance_risk_dataset.csv")

@@ -47,8 +47,8 @@ stages:
           - checkout: self
 
           - script: |
-              sudo apt-get install -y python3-pip --quiet
-              python3 -m pip install numpy pandas --quiet
+              python3 -m venv $(Agent.TempDirectory)/venv
+              $(Agent.TempDirectory)/venv/bin/pip install numpy pandas --quiet
             displayName: "Install dependencies"
 
           - task: AzureCLI@2
@@ -94,6 +94,7 @@ stages:
 
           - script: |
               set -e
+              PYTHON="$(Agent.TempDirectory)/venv/bin/python"
               SCRIPT="$(System.DefaultWorkingDirectory)/machinelearning/white-orchid/simulate_drift.py"
 
               if [ "${{ parameters.targetEndpoint }}" = "prod" ] || [ "${{ parameters.targetEndpoint }}" = "both" ]; then
@@ -101,7 +102,7 @@ stages:
                 echo "========================================"
                 echo " PROD ENDPOINT — ${{ parameters.driftIntensity }} drift"
                 echo "========================================"
-                python3 "$SCRIPT" \
+                "$PYTHON" "$SCRIPT" \
                   --mode simulate \
                   --intensity "${{ parameters.driftIntensity }}" \
                   --count "${{ parameters.recordCount }}" \
@@ -114,7 +115,7 @@ stages:
                 echo "========================================"
                 echo " PRE-PROD ENDPOINT — ${{ parameters.driftIntensity }} drift"
                 echo "========================================"
-                python3 "$SCRIPT" \
+                "$PYTHON" "$SCRIPT" \
                   --mode simulate \
                   --intensity "${{ parameters.driftIntensity }}" \
                   --count "${{ parameters.recordCount }}" \
