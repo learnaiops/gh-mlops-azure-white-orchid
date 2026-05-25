@@ -46,11 +46,7 @@ stages:
         steps:
           - checkout: self
 
-          - task: UsePythonVersion@0
-            inputs:
-              versionSpec: "3.9"
-
-          - script: pip install numpy pandas --quiet
+          - script: python3 -m pip install numpy pandas --quiet
             displayName: "Install dependencies"
 
           - task: AzureCLI@2
@@ -103,7 +99,7 @@ stages:
                 echo "========================================"
                 echo " PROD ENDPOINT — ${{ parameters.driftIntensity }} drift"
                 echo "========================================"
-                python "$SCRIPT" \
+                python3 "$SCRIPT" \
                   --mode simulate \
                   --intensity "${{ parameters.driftIntensity }}" \
                   --count "${{ parameters.recordCount }}" \
@@ -116,7 +112,7 @@ stages:
                 echo "========================================"
                 echo " PRE-PROD ENDPOINT — ${{ parameters.driftIntensity }} drift"
                 echo "========================================"
-                python "$SCRIPT" \
+                python3 "$SCRIPT" \
                   --mode simulate \
                   --intensity "${{ parameters.driftIntensity }}" \
                   --count "${{ parameters.recordCount }}" \

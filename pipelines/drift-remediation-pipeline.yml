@@ -199,11 +199,7 @@ print(score)
         steps:
           - checkout: self
 
-          - task: UsePythonVersion@0
-            inputs:
-              versionSpec: "3.9"
-
-          - script: pip install numpy pandas scikit-learn joblib --quiet
+          - script: python3 -m pip install numpy pandas scikit-learn joblib --quiet
             displayName: "Install Python dependencies"
 
           - script: |
@@ -211,7 +207,7 @@ print(score)
               echo "Generating augmented training data (original + drift-shifted records)..."
 
               # Augment: generate 500 shifted records with pseudo-labels
-              python "$(mlDir)/simulate_drift.py" \
+              python3 "$(mlDir)/simulate_drift.py" \
                 --mode augment \
                 --intensity severe \
                 --count 500 \
