@@ -46,7 +46,9 @@ stages:
         steps:
           - checkout: self
 
-          - script: python3 -m pip install numpy pandas --quiet
+          - script: |
+              sudo apt-get install -y python3-pip --quiet
+              python3 -m pip install numpy pandas --quiet
             displayName: "Install dependencies"
 
           - task: AzureCLI@2

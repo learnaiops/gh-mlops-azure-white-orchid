@@ -199,7 +199,9 @@ print(score)
         steps:
           - checkout: self
 
-          - script: python3 -m pip install numpy pandas scikit-learn joblib --quiet
+          - script: |
+              sudo apt-get install -y python3-pip --quiet
+              python3 -m pip install numpy pandas scikit-learn joblib --quiet
             displayName: "Install Python dependencies"
 
           - script: |
