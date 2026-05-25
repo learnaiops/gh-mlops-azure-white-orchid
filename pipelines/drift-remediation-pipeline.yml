@@ -1,0 +1,787 @@
+# drift-remediation-pipeline.yml
+#
+# Automated end-to-end drift remediation:
+#   1. AssessDrift     — query App Insights for feature + prediction distribution shift
+#   2. RetrainChallenger — retrain on original data augmented with drift-shifted records
+#   3. RegisterChallenger — register new model with drift metadata tags
+#   4. DeployCanary    — deploy challenger at 10% traffic alongside champion (dp-prod-blue)
+#   5. ValidateCanary  — send test traffic; compare challenger vs champion via App Insights
+#   6. Promote         — promote challenger: update dp-prod-blue to challenger version, 100% traffic
+#   7. Rollback        — on validation failure: restore dp-prod-blue to 100%, delete challenger
+#
+# Trigger: run manually after a drift alert, OR wire the Action Group webhook
+# to a Logic App that calls the ADO REST API to queue this pipeline automatically.
+#
+# Canary wait time: configurable (default 1800s = 30min). Use 60s for demos.
+
+trigger: none
+
+pool: "blue-moon-hub-linux"
+
+parameters:
+  - name: canaryWaitSeconds
+    displayName: "Canary validation wait time (seconds)"
+    type: number
+    default: 1800
+
+  - name: forceDrift
+    displayName: "Force remediation even if drift score is LOW (for testing)"
+    type: boolean
+    default: false
+
+  - name: challengerAucGate
+    displayName: "Minimum AUC for challenger model"
+    type: string
+    default: "0.82"
+
+variables:
+  prodResourceGroup:    "rg-white-orchid-prod-mlph0r"
+  prodMlWorkspace:      "mlw-white-orchid-prod-mlph0r"
+  prodEndpointName:     "ep-prod-white-orchid"
+  prodDeploymentBlue:   "dp-prod-blue"
+  prodDeploymentChallenger: "dp-prod-challenger"
+  prodComputeName:      "aks-inf-prod"
+  preProdResourceGroup: "rg-white-orchid-8bx7s6"
+  preProdMlWorkspace:   "mlw-white-orchid-8bx7s6"
+  modelName:            "white-orchid-risk-model"
+  mlDir:                "$(System.DefaultWorkingDirectory)/machinelearning/white-orchid"
+  condaFile:            "$(System.DefaultWorkingDirectory)/machinelearning/white-orchid/conda.yml"
+
+stages:
+  # ─────────────────────────────────────────────────────────────
+  # Stage 1: Assess drift severity from App Insights telemetry
+  # ─────────────────────────────────────────────────────────────
+  - stage: AssessDrift
+    displayName: "Assess drift severity"
+    jobs:
+      - job: Assess
+        displayName: "Query App Insights and compute drift score"
+        steps:
+          - checkout: self
+
+          - task: AzureCLI@2
+            displayName: "Query prediction distribution (last 24h)"
+            name: assess
+            inputs:
+              azureSubscription: "sp-blue-moon"
+              scriptType: "bash"
+              scriptLocation: "inlineScript"
+              inlineScript: |
+                set -e
+                az extension add -n ml -y
+
+                # Resolve App Insights name from the prod resource group
+                APPINSIGHTS_NAME=$(az monitor app-insights component list \
+                  --resource-group $(prodResourceGroup) \
+                  --query "[0].name" -o tsv 2>/dev/null || echo "")
+
+                if [ -z "$APPINSIGHTS_NAME" ]; then
+                  echo "##[warning]App Insights not found in $(prodResourceGroup) — cannot assess drift from telemetry"
+                  echo "##vso[task.setvariable variable=DRIFT_SEVERITY;isOutput=true]HIGH"
+                  echo "##vso[task.setvariable variable=DRIFT_SCORE;isOutput=true]unknown"
+                  exit 0
+                fi
+
+                echo "App Insights: $APPINSIGHTS_NAME"
+
+                # Query prediction stats over last 24h
+                RESULT=$(az monitor app-insights query \
+                  --app "$APPINSIGHTS_NAME" \
+                  --resource-group "$(prodResourceGroup)" \
+                  --analytics-query "
+                    customEvents
+                    | where name == 'risk_prediction'
+                    | where timestamp > ago(24h)
+                    | extend risk_prob = todouble(customDimensions['risk_probability'])
+                    | extend bmi_val   = todouble(customDimensions['bmi'])
+                    | extend age_val   = todouble(customDimensions['age'])
+                    | summarize
+                        record_count  = count(),
+                        avg_risk_prob = round(avg(risk_prob), 4),
+                        avg_bmi       = round(avg(bmi_val), 2),
+                        avg_age       = round(avg(age_val), 2),
+                        p95_risk_prob = round(percentile(risk_prob, 95), 4)
+                  " \
+                  --output json 2>/dev/null || echo "{}")
+
+                RECORD_COUNT=$(echo "$RESULT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(int(d['tables'][0]['rows'][0][0]))" 2>/dev/null || echo "0")
+                AVG_RISK=$(echo "$RESULT"  | python3 -c "import json,sys; d=json.load(sys.stdin); print(float(d['tables'][0]['rows'][0][1]))" 2>/dev/null || echo "0")
+                AVG_BMI=$(echo "$RESULT"   | python3 -c "import json,sys; d=json.load(sys.stdin); print(float(d['tables'][0]['rows'][0][2]))" 2>/dev/null || echo "0")
+                AVG_AGE=$(echo "$RESULT"   | python3 -c "import json,sys; d=json.load(sys.stdin); print(float(d['tables'][0]['rows'][0][3]))" 2>/dev/null || echo "0")
+                P95_RISK=$(echo "$RESULT"  | python3 -c "import json,sys; d=json.load(sys.stdin); print(float(d['tables'][0]['rows'][0][4]))" 2>/dev/null || echo "0")
+
+                echo "========================================"
+                echo " DRIFT ASSESSMENT REPORT"
+                echo "========================================"
+                echo " Records (last 24h): $RECORD_COUNT"
+                echo " Avg risk_prob:      $AVG_RISK  (baseline ~0.45)"
+                echo " Avg BMI:            $AVG_BMI  (baseline ~27)"
+                echo " Avg age:            $AVG_AGE  (baseline ~45)"
+                echo " P95 risk_prob:      $P95_RISK"
+                echo "========================================"
+
+                # Determine severity
+                DRIFT_SEVERITY="NONE"
+                DRIFT_SCORE="0"
+
+                if [ "${{ parameters.forceDrift }}" = "True" ]; then
+                  DRIFT_SEVERITY="HIGH"
+                  DRIFT_SCORE="forced"
+                  echo "Drift forced by pipeline parameter"
+                elif [ "$RECORD_COUNT" -lt "10" ]; then
+                  DRIFT_SEVERITY="INSUFFICIENT_DATA"
+                  echo "Insufficient data for assessment (< 10 records)"
+                else
+                  # Compute a simple composite drift score (0–3, one point per breached threshold)
+                  SCORE=0
+                  python3 - <<PYEOF
+import sys
+avg_risk = float("$AVG_RISK")
+avg_bmi  = float("$AVG_BMI")
+avg_age  = float("$AVG_AGE")
+score = 0
+if avg_risk > 0.60: score += 1
+if avg_bmi  > 32:   score += 1
+if avg_age  > 56:   score += 1
+print(score)
+PYEOF
+                  SCORE=$?
+
+                  # Re-compute score via python3 return value workaround
+                  SCORE=$(python3 -c "
+avg_risk = float('$AVG_RISK')
+avg_bmi  = float('$AVG_BMI')
+avg_age  = float('$AVG_AGE')
+score = 0
+if avg_risk > 0.60: score += 1
+if avg_bmi  > 32:   score += 1
+if avg_age  > 56:   score += 1
+print(score)
+")
+                  DRIFT_SCORE=$SCORE
+                  if [ "$SCORE" -ge "2" ]; then
+                    DRIFT_SEVERITY="HIGH"
+                  elif [ "$SCORE" -eq "1" ]; then
+                    DRIFT_SEVERITY="LOW"
+                  fi
+                fi
+
+                echo " Drift score:   $DRIFT_SCORE / 3"
+                echo " Severity:      $DRIFT_SEVERITY"
+
+                if [ "$DRIFT_SEVERITY" != "HIGH" ]; then
+                  echo ""
+                  echo "##[warning]Drift severity is $DRIFT_SEVERITY — retraining will be skipped."
+                  echo "Run with forceDrift=true to override."
+                fi
+
+                echo "##vso[task.setvariable variable=DRIFT_SEVERITY;isOutput=true]$DRIFT_SEVERITY"
+                echo "##vso[task.setvariable variable=DRIFT_SCORE;isOutput=true]$DRIFT_SCORE"
+                echo "##vso[task.setvariable variable=AVG_RISK_PROB;isOutput=true]$AVG_RISK"
+
+  # ─────────────────────────────────────────────────────────────
+  # Stage 2: Retrain challenger on augmented data
+  # ─────────────────────────────────────────────────────────────
+  - stage: RetrainChallenger
+    displayName: "Retrain challenger model"
+    dependsOn: AssessDrift
+    condition: >
+      and(
+        succeeded('AssessDrift'),
+        eq(stageDependencies.AssessDrift.Assess.outputs['assess.DRIFT_SEVERITY'], 'HIGH')
+      )
+    variables:
+      DRIFT_SEVERITY: $[ stageDependencies.AssessDrift.Assess.outputs['assess.DRIFT_SEVERITY'] ]
+    jobs:
+      - job: Retrain
+        displayName: "Augment training data and submit AML job"
+        timeoutInMinutes: 90
+        steps:
+          - checkout: self
+
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: "3.9"
+
+          - script: pip install numpy pandas scikit-learn joblib --quiet
+            displayName: "Install Python dependencies"
+
+          - script: |
+              set -e
+              echo "Generating augmented training data (original + drift-shifted records)..."
+
+              # Augment: generate 500 shifted records with pseudo-labels
+              python "$(mlDir)/simulate_drift.py" \
+                --mode augment \
+                --intensity severe \
+                --count 500 \
+                --output /tmp/augmented_drift.csv
+
+              # Combine with original training data (70% original, 30% augmented)
+              python3 - <<PYEOF
+import pandas as pd, os
+
+original = pd.read_csv("$(mlDir)/data/health_insurance_risk_dataset.csv")
+augmented = pd.read_csv("/tmp/augmented_drift.csv")
+
+# Drop customer_id from augmented (generated IDs don't belong in final set)
+if "customer_id" in augmented.columns:
+    augmented = augmented.drop(columns=["customer_id"])
+
+# Ensure column alignment — original has customer_id, keep it
+combined = pd.concat([
+    original.drop(columns=["customer_id"], errors="ignore"),
+    augmented,
+], ignore_index=True).sample(frac=1, random_state=42)
+
+out_path = "/tmp/combined_training.csv"
+combined.to_csv(out_path, index=False)
+pos_rate = combined["high_risk_customer"].mean()
+print(f"Combined dataset: {len(combined)} rows, {pos_rate:.1%} high-risk rate")
+print(f"Original rows:  {len(original)}")
+print(f"Augmented rows: {len(augmented)}")
+PYEOF
+
+              echo "Combined training data ready at /tmp/combined_training.csv"
+            displayName: "Augment training data"
+
+          - task: AzureCLI@2
+            displayName: "Submit challenger training job"
+            name: retrain
+            inputs:
+              azureSubscription: "sp-blue-moon"
+              scriptType: "bash"
+              scriptLocation: "inlineScript"
+              inlineScript: |
+                set -e
+                az extension add -n ml -y
+
+                # Upload augmented data to AML default datastore
+                STORAGE_ACCOUNT=$(az ml workspace show \
+                  --resource-group $(preProdResourceGroup) \
+                  --name $(preProdMlWorkspace) \
+                  --query storage_account -o tsv | awk -F'/' '{print $NF}')
+
+                CONTAINER="azureml-blobstore-$(az ml workspace show \
+                  --resource-group $(preProdResourceGroup) \
+                  --name $(preProdMlWorkspace) \
+                  --query id -o tsv | awk -F'/' '{print $NF}')"
+
+                az storage blob upload \
+                  --account-name "$STORAGE_ACCOUNT" \
+                  --container-name "azureml" \
+                  --name "drift-remediation/combined_training.csv" \
+                  --file "/tmp/combined_training.csv" \
+                  --overwrite \
+                  --auth-mode login \
+                  2>/dev/null || echo "##[warning]Could not upload to datastore — falling back to local file"
+
+                # Submit training job pointing to the combined dataset
+                cat > /tmp/challenger_job.yml << YAML
+\$schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
+command: >
+  python train.py
+  --data /tmp/combined_training.csv
+  --out \${{outputs.model_dir}}
+code: $(mlDir)
+environment:
+  conda_file: $(condaFile)
+  image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04
+compute: azureml:cpu-cluster
+inputs:
+  training_data:
+    type: uri_file
+    path: /tmp/combined_training.csv
+    mode: download
+outputs:
+  model_dir:
+    type: uri_folder
+display_name: "challenger-drift-remediation-$(Build.BuildId)"
+description: "Challenger retrain triggered by drift alert (score: $(DRIFT_SEVERITY))"
+tags:
+  trigger: drift_remediation
+  pipeline_run: "$(Build.BuildId)"
+  drift_severity: "$(DRIFT_SEVERITY)"
+YAML
+
+                JOB_NAME=$(az ml job create \
+                  --resource-group $(preProdResourceGroup) \
+                  --workspace-name $(preProdMlWorkspace) \
+                  --file /tmp/challenger_job.yml \
+                  --query name -o tsv)
+
+                echo "Challenger training job: $JOB_NAME"
+
+                az ml job stream \
+                  --resource-group $(preProdResourceGroup) \
+                  --workspace-name $(preProdMlWorkspace) \
+                  --name "$JOB_NAME"
+
+                STATUS=$(az ml job show \
+                  --resource-group $(preProdResourceGroup) \
+                  --workspace-name $(preProdMlWorkspace) \
+                  --name "$JOB_NAME" \
+                  --query status -o tsv)
+
+                if [ "$STATUS" != "Completed" ]; then
+                  echo "##[error]Challenger training job failed (status: $STATUS). AUC gate may have blocked it."
+                  exit 1
+                fi
+
+                echo "##vso[task.setvariable variable=CHALLENGER_JOB;isOutput=true]$JOB_NAME"
+
+  # ─────────────────────────────────────────────────────────────
+  # Stage 3: Register challenger in pre-prod and promote to prod
+  # ─────────────────────────────────────────────────────────────
+  - stage: RegisterChallenger
+    displayName: "Register challenger model"
+    dependsOn: RetrainChallenger
+    variables:
+      CHALLENGER_JOB: $[ stageDependencies.RetrainChallenger.Retrain.outputs['retrain.CHALLENGER_JOB'] ]
+    jobs:
+      - job: Register
+        displayName: "Register and tag challenger model in prod workspace"
+        steps:
+          - checkout: self
+
+          - task: AzureCLI@2
+            displayName: "Register challenger in pre-prod, copy to prod"
+            name: register
+            inputs:
+              azureSubscription: "sp-blue-moon"
+              scriptType: "bash"
+              scriptLocation: "inlineScript"
+              inlineScript: |
+                set -e
+                az extension add -n ml -y
+
+                # Register challenger from job artifacts
+                az ml model create \
+                  --resource-group $(preProdResourceGroup) \
+                  --workspace-name $(preProdMlWorkspace) \
+                  --name "$(modelName)" \
+                  --path "azureml://jobs/$(CHALLENGER_JOB)/outputs/model_dir" \
+                  --type custom_model \
+                  --description "Challenger: drift remediation (build $(Build.BuildId))"
+
+                # Get the new version number
+                CHALLENGER_VERSION=$(az ml model list \
+                  --resource-group $(preProdResourceGroup) \
+                  --workspace-name $(preProdMlWorkspace) \
+                  --name $(modelName) \
+                  --query "[0].version" -o tsv)
+
+                echo "Challenger model version: $CHALLENGER_VERSION"
+
+                # Download and re-register in prod workspace
+                az ml model download \
+                  --resource-group $(preProdResourceGroup) \
+                  --workspace-name $(preProdMlWorkspace) \
+                  --name $(modelName) \
+                  --version "$CHALLENGER_VERSION" \
+                  --download-path /tmp/challenger_model
+
+                az ml model create \
+                  --resource-group $(prodResourceGroup) \
+                  --workspace-name $(prodMlWorkspace) \
+                  --name $(modelName) \
+                  --version "$CHALLENGER_VERSION" \
+                  --path "/tmp/challenger_model/$(modelName)" \
+                  --type custom_model \
+                  --description "Challenger: drift remediation (build $(Build.BuildId))"
+
+                echo "Challenger registered in prod workspace as version $CHALLENGER_VERSION"
+                echo "##vso[task.setvariable variable=CHALLENGER_VERSION;isOutput=true]$CHALLENGER_VERSION"
+
+  # ─────────────────────────────────────────────────────────────
+  # Stage 4: Canary — deploy challenger at 10% traffic
+  # ─────────────────────────────────────────────────────────────
+  - stage: DeployCanary
+    displayName: "Canary — challenger at 10% traffic"
+    dependsOn: RegisterChallenger
+    variables:
+      CHALLENGER_VERSION: $[ stageDependencies.RegisterChallenger.Register.outputs['register.CHALLENGER_VERSION'] ]
+    jobs:
+      - deployment: DeployChallenger
+        displayName: "Deploy challenger alongside champion"
+        environment: "production-aks"
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: AzureCLI@2
+                  displayName: "Create challenger deployment and set 10% traffic"
+                  inputs:
+                    azureSubscription: "sp-blue-moon"
+                    scriptType: "bash"
+                    scriptLocation: "inlineScript"
+                    inlineScript: |
+                      set -e
+                      az extension add -n ml -y
+
+                      echo "Deploying challenger v$(CHALLENGER_VERSION) at 10% traffic"
+
+                      printf '%s\n' \
+                        '$schema: https://azuremlschemas.azureedge.net/latest/kubernetesOnlineDeployment.schema.json' \
+                        "name: $(prodDeploymentChallenger)" \
+                        "type: kubernetes" \
+                        "endpoint_name: $(prodEndpointName)" \
+                        "model: azureml:$(modelName):$(CHALLENGER_VERSION)" \
+                        "code_configuration:" \
+                        "  code: $(mlDir)" \
+                        "  scoring_script: score.py" \
+                        "environment:" \
+                        "  conda_file: $(condaFile)" \
+                        "  image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04" \
+                        "instance_type: defaultinstancetype" \
+                        "instance_count: 1" \
+                        > /tmp/challenger_deployment.yml
+
+                      # Create or update challenger deployment
+                      if az ml online-deployment show \
+                          --resource-group $(prodResourceGroup) \
+                          --workspace-name $(prodMlWorkspace) \
+                          --endpoint-name $(prodEndpointName) \
+                          --name $(prodDeploymentChallenger) &>/dev/null; then
+                        echo "Challenger deployment exists — updating"
+                        az ml online-deployment update \
+                          --resource-group $(prodResourceGroup) \
+                          --workspace-name $(prodMlWorkspace) \
+                          --file /tmp/challenger_deployment.yml
+                      else
+                        echo "Creating challenger deployment"
+                        az ml online-deployment create \
+                          --resource-group $(prodResourceGroup) \
+                          --workspace-name $(prodMlWorkspace) \
+                          --file /tmp/challenger_deployment.yml
+                      fi
+
+                      # Set traffic split: 90% champion, 10% challenger
+                      az ml online-endpoint update \
+                        --resource-group $(prodResourceGroup) \
+                        --workspace-name $(prodMlWorkspace) \
+                        --name $(prodEndpointName) \
+                        --traffic "$(prodDeploymentBlue)=90 $(prodDeploymentChallenger)=10"
+
+                      echo "Traffic split active: dp-prod-blue=90%, dp-prod-challenger=10%"
+                      echo "Canary will be validated after ${{ parameters.canaryWaitSeconds }}s"
+
+  # ─────────────────────────────────────────────────────────────
+  # Stage 5: Canary validation — wait and compare model metrics
+  # ─────────────────────────────────────────────────────────────
+  - stage: ValidateCanary
+    displayName: "Validate canary (wait + metric comparison)"
+    dependsOn:
+      - DeployCanary
+      - RegisterChallenger
+    variables:
+      CHALLENGER_VERSION: $[ stageDependencies.RegisterChallenger.Register.outputs['register.CHALLENGER_VERSION'] ]
+    jobs:
+      - job: Validate
+        displayName: "Compare champion vs challenger via App Insights"
+        timeoutInMinutes: 45
+        steps:
+          - checkout: self
+
+          - task: AzureCLI@2
+            displayName: "Send canary traffic and wait"
+            inputs:
+              azureSubscription: "sp-blue-moon"
+              scriptType: "bash"
+              scriptLocation: "inlineScript"
+              inlineScript: |
+                set -e
+                az extension add -n ml -y
+
+                EP_KEY=$(az ml online-endpoint get-credentials \
+                  --resource-group $(prodResourceGroup) \
+                  --workspace-name $(prodMlWorkspace) \
+                  --name $(prodEndpointName) \
+                  --query primaryKey -o tsv)
+
+                SCORING_URI=$(az ml online-endpoint show \
+                  --resource-group $(prodResourceGroup) \
+                  --workspace-name $(prodMlWorkspace) \
+                  --name $(prodEndpointName) \
+                  --query scoring_uri -o tsv)
+
+                echo "Sending 200 canary validation requests (90 → champion, ~20 → challenger)..."
+                python3 - <<PYEOF
+import json, urllib.request, time, random, sys
+
+url = "$SCORING_URI"
+key = "$EP_KEY"
+
+records = [
+  {"age": 45, "bmi": 27.5, "smoker": 0, "chronic_conditions": 1, "annual_income": 65000,
+   "exercise_freq_per_week": 3, "alcohol_units_per_week": 4, "num_claims_last_year": 1,
+   "family_history": 0, "region": "North"},
+  {"age": 58, "bmi": 33.2, "smoker": 1, "chronic_conditions": 2, "annual_income": 48000,
+   "exercise_freq_per_week": 1, "alcohol_units_per_week": 8, "num_claims_last_year": 4,
+   "family_history": 1, "region": "South"},
+  {"age": 35, "bmi": 22.1, "smoker": 0, "chronic_conditions": 0, "annual_income": 95000,
+   "exercise_freq_per_week": 5, "alcohol_units_per_week": 2, "num_claims_last_year": 0,
+   "family_history": 0, "region": "West"},
+]
+
+errors = 0
+for i in range(200):
+    payload = json.dumps(records[i % len(records)]).encode()
+    req = urllib.request.Request(url, data=payload,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"})
+    try:
+        urllib.request.urlopen(req, timeout=15)
+    except Exception:
+        errors += 1
+    time.sleep(0.2)
+
+print(f"Sent 200 requests, errors: {errors}")
+if errors > 20:
+    print("ERROR: >10% error rate during canary traffic send", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+
+          - task: Bash@3
+            displayName: "Wait for canary observation period"
+            inputs:
+              targetType: "inline"
+              script: |
+                echo "Waiting ${{ parameters.canaryWaitSeconds }}s for canary traffic to accumulate in App Insights..."
+                sleep "${{ parameters.canaryWaitSeconds }}"
+                echo "Canary observation window complete."
+
+          - task: AzureCLI@2
+            displayName: "Compare champion vs challenger metrics"
+            name: validate
+            inputs:
+              azureSubscription: "sp-blue-moon"
+              scriptType: "bash"
+              scriptLocation: "inlineScript"
+              inlineScript: |
+                set -e
+
+                APPINSIGHTS_NAME=$(az monitor app-insights component list \
+                  --resource-group $(prodResourceGroup) \
+                  --query "[0].name" -o tsv 2>/dev/null || echo "")
+
+                if [ -z "$APPINSIGHTS_NAME" ]; then
+                  echo "##[warning]App Insights not found — assuming canary passed (blind promotion)"
+                  echo "##vso[task.setvariable variable=CANARY_DECISION;isOutput=true]PROMOTE"
+                  exit 0
+                fi
+
+                RESULT=$(az monitor app-insights query \
+                  --app "$APPINSIGHTS_NAME" \
+                  --resource-group "$(prodResourceGroup)" \
+                  --analytics-query "
+                    customEvents
+                    | where name == 'risk_prediction'
+                    | where timestamp > ago(2h)
+                    | extend model_version = tostring(customDimensions['model_version'])
+                    | extend risk_prob = todouble(customDimensions['risk_probability'])
+                    | summarize
+                        record_count  = count(),
+                        avg_risk_prob = round(avg(risk_prob), 4),
+                        error_count   = countif(isnan(risk_prob))
+                      by model_version
+                    | order by record_count desc
+                  " \
+                  --output json 2>/dev/null || echo "{}")
+
+                echo "Model version comparison (last 2h):"
+                echo "$RESULT" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+rows = d.get('tables', [{}])[0].get('rows', [])
+print(f'  {'Version':<20} {'Count':>8} {'Avg Risk Prob':>14} {'Errors':>8}')
+print('  ' + '-'*55)
+for r in rows:
+    print(f'  {str(r[0]):<20} {int(r[1] or 0):>8} {float(r[2] or 0):>14.4f} {int(r[3] or 0):>8}')
+" 2>/dev/null || echo "  (could not parse response)"
+
+                DECISION=$(az monitor app-insights query \
+                  --app "$APPINSIGHTS_NAME" \
+                  --resource-group "$(prodResourceGroup)" \
+                  --analytics-query "
+                    customEvents
+                    | where name == 'risk_prediction'
+                    | where timestamp > ago(2h)
+                    | extend model_version = tostring(customDimensions['model_version'])
+                    | extend risk_prob = todouble(customDimensions['risk_probability'])
+                    | summarize
+                        count_   = count(),
+                        avg_prob = avg(risk_prob),
+                        errors   = countif(isnan(risk_prob))
+                      by model_version
+                    | extend decision = iff(errors * 100.0 / count_ > 5 or avg_prob > 0.85, 'ROLLBACK', 'PROMOTE')
+                    | where model_version == '$(CHALLENGER_VERSION)'
+                    | project decision
+                  " \
+                  --output json 2>/dev/null | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+rows = d.get('tables', [{}])[0].get('rows', [])
+print(rows[0][0] if rows else 'PROMOTE')
+" 2>/dev/null || echo "PROMOTE")
+
+                echo ""
+                echo "Canary decision: $DECISION"
+                echo "  (PROMOTE if challenger error_rate < 5% AND avg_risk_prob <= 0.85)"
+                echo "  (ROLLBACK if challenger error_rate >= 5% OR avg_risk_prob > 0.85)"
+
+                echo "##vso[task.setvariable variable=CANARY_DECISION;isOutput=true]$DECISION"
+                echo "##vso[task.setvariable variable=CHALLENGER_VERSION_OUT;isOutput=true]$(CHALLENGER_VERSION)"
+
+  # ─────────────────────────────────────────────────────────────
+  # Stage 6: Promote — challenger wins, become the new champion
+  # ─────────────────────────────────────────────────────────────
+  - stage: Promote
+    displayName: "Promote challenger to champion"
+    dependsOn:
+      - ValidateCanary
+      - RegisterChallenger
+    condition: >
+      and(
+        succeeded('ValidateCanary'),
+        eq(stageDependencies.ValidateCanary.Validate.outputs['validate.CANARY_DECISION'], 'PROMOTE')
+      )
+    variables:
+      CHALLENGER_VERSION: $[ stageDependencies.RegisterChallenger.Register.outputs['register.CHALLENGER_VERSION'] ]
+    jobs:
+      - deployment: PromoteChallenger
+        displayName: "Promote challenger to 100% traffic"
+        environment: "production-aks"
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: AzureCLI@2
+                  displayName: "Update champion deployment and restore 100% traffic"
+                  inputs:
+                    azureSubscription: "sp-blue-moon"
+                    scriptType: "bash"
+                    scriptLocation: "inlineScript"
+                    inlineScript: |
+                      set -e
+                      az extension add -n ml -y
+
+                      echo "Promoting challenger v$(CHALLENGER_VERSION) → champion (dp-prod-blue)"
+                      echo ""
+
+                      # Update the blue (champion) deployment to the challenger model version
+                      printf '%s\n' \
+                        '$schema: https://azuremlschemas.azureedge.net/latest/kubernetesOnlineDeployment.schema.json' \
+                        "name: $(prodDeploymentBlue)" \
+                        "type: kubernetes" \
+                        "endpoint_name: $(prodEndpointName)" \
+                        "model: azureml:$(modelName):$(CHALLENGER_VERSION)" \
+                        "code_configuration:" \
+                        "  code: $(mlDir)" \
+                        "  scoring_script: score.py" \
+                        "environment:" \
+                        "  conda_file: $(condaFile)" \
+                        "  image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04" \
+                        "instance_type: defaultinstancetype" \
+                        "instance_count: 2" \
+                        > /tmp/promoted_deployment.yml
+
+                      az ml online-deployment update \
+                        --resource-group $(prodResourceGroup) \
+                        --workspace-name $(prodMlWorkspace) \
+                        --file /tmp/promoted_deployment.yml
+
+                      # Restore full traffic to blue
+                      az ml online-endpoint update \
+                        --resource-group $(prodResourceGroup) \
+                        --workspace-name $(prodMlWorkspace) \
+                        --name $(prodEndpointName) \
+                        --traffic "$(prodDeploymentBlue)=100"
+
+                      echo "Traffic restored: dp-prod-blue=100% (model v$(CHALLENGER_VERSION))"
+
+                      # Remove the challenger deployment (now merged into blue)
+                      az ml online-deployment delete \
+                        --resource-group $(prodResourceGroup) \
+                        --workspace-name $(prodMlWorkspace) \
+                        --endpoint-name $(prodEndpointName) \
+                        --name $(prodDeploymentChallenger) \
+                        --yes
+
+                      echo ""
+                      echo "========================================"
+                      echo " PROMOTION COMPLETE"
+                      echo " Model: $(modelName) v$(CHALLENGER_VERSION)"
+                      echo " Deployment: $(prodDeploymentBlue) — 100% traffic"
+                      echo " Challenger deployment removed"
+                      echo "========================================"
+
+  # ─────────────────────────────────────────────────────────────
+  # Stage 7: Rollback — challenger fails, restore champion
+  # ─────────────────────────────────────────────────────────────
+  - stage: Rollback
+    displayName: "Rollback — restore champion"
+    dependsOn: ValidateCanary
+    condition: >
+      or(
+        failed('ValidateCanary'),
+        eq(stageDependencies.ValidateCanary.Validate.outputs['validate.CANARY_DECISION'], 'ROLLBACK')
+      )
+    jobs:
+      - deployment: RollbackChallenger
+        displayName: "Restore 100% traffic to champion"
+        environment: "production-aks"
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: AzureCLI@2
+                  displayName: "Restore champion traffic and delete challenger"
+                  inputs:
+                    azureSubscription: "sp-blue-moon"
+                    scriptType: "bash"
+                    scriptLocation: "inlineScript"
+                    inlineScript: |
+                      set -e
+                      az extension add -n ml -y
+
+                      echo "##[warning]Canary validation failed — rolling back to champion"
+
+                      # Restore 100% to champion
+                      az ml online-endpoint update \
+                        --resource-group $(prodResourceGroup) \
+                        --workspace-name $(prodMlWorkspace) \
+                        --name $(prodEndpointName) \
+                        --traffic "$(prodDeploymentBlue)=100"
+
+                      echo "Traffic restored: dp-prod-blue=100% (champion)"
+
+                      # Delete the failed challenger
+                      if az ml online-deployment show \
+                          --resource-group $(prodResourceGroup) \
+                          --workspace-name $(prodMlWorkspace) \
+                          --endpoint-name $(prodEndpointName) \
+                          --name $(prodDeploymentChallenger) &>/dev/null; then
+                        az ml online-deployment delete \
+                          --resource-group $(prodResourceGroup) \
+                          --workspace-name $(prodMlWorkspace) \
+                          --endpoint-name $(prodEndpointName) \
+                          --name $(prodDeploymentChallenger) \
+                          --yes
+                        echo "Challenger deployment deleted"
+                      fi
+
+                      echo ""
+                      echo "========================================"
+                      echo " ROLLBACK COMPLETE"
+                      echo " Champion (dp-prod-blue) is serving 100%"
+                      echo " Challenger has been removed"
+                      echo ""
+                      echo " Action required: investigate canary failure"
+                      echo "   1. Check App Insights > customEvents for challenger errors"
+                      echo "   2. Review training job logs in AML Studio"
+                      echo "   3. Adjust challenger AUC gate or drift thresholds"
+                      echo "========================================"

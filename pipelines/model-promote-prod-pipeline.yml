@@ -212,10 +212,12 @@ stages:
                         --name $(prodEndpointName) \
                         --query scoring_uri -o tsv)
 
+                      PAYLOAD='{"age":45,"bmi":28.5,"smoker":1,"chronic_conditions":1,"annual_income":55000,"exercise_freq_per_week":1,"alcohol_units_per_week":2,"num_claims_last_year":3,"family_history":1,"region":"North"}'
+
                       RESPONSE=$(curl -sf -X POST "$SCORING_URI" \
                         -H "Content-Type: application/json" \
                         -H "Authorization: Bearer $EP_KEY" \
-                        -d '{"input_data":{"columns":["age","bmi","smoker","chronic_conditions","annual_income","exercise_freq_per_week","alcohol_units_per_week","num_claims_last_year","family_history","region"],"data":[[35,25.0,0,0,60000,3,4,0,0,"North"]]}}')
+                        -d "$PAYLOAD")
 
                       echo "Smoke test response: $RESPONSE"
                       echo "$RESPONSE" | grep -q "risk_probability" || { echo "##[error]Smoke test failed — unexpected response"; exit 1; }

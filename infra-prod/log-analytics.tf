@@ -66,7 +66,13 @@ resource "azurerm_monitor_metric_alert" "endpoint_errors" {
     threshold        = 5
   }
 
+  action {
+    action_group_id = azurerm_monitor_action_group.drift_alerts.id
+  }
+
   tags = local.common_tags
+
+  depends_on = [azurerm_monitor_action_group.drift_alerts]
 }
 
 # Alert: endpoint p95 latency > 3 seconds
@@ -87,5 +93,11 @@ resource "azurerm_monitor_metric_alert" "endpoint_latency" {
     threshold        = 3000
   }
 
+  action {
+    action_group_id = azurerm_monitor_action_group.drift_alerts.id
+  }
+
   tags = local.common_tags
+
+  depends_on = [azurerm_monitor_action_group.drift_alerts]
 }

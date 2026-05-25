@@ -57,3 +57,15 @@ variable "prod_deployment_name" {
   type        = string
   default     = "dp-prod-blue"
 }
+
+variable "alert_email" {
+  description = "Email address for drift and operational alerts (Action Group)"
+  type        = string
+  default     = "naushad.alam@outlook.com"
+}
+
+variable "teams_webhook_url" {
+  description = "Optional Teams incoming-webhook URL. When set, alerts are also posted to the MLOps channel. Leave empty to disable."
+  type        = string
+  default     = ""
+}

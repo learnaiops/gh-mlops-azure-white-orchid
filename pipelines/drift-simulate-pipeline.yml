@@ -1,0 +1,141 @@
+trigger: none
+
+pool: "blue-moon-hub-linux"
+
+parameters:
+  - name: driftIntensity
+    displayName: "Drift intensity"
+    type: string
+    default: "severe"
+    values:
+      - mild
+      - moderate
+      - severe
+
+  - name: targetEndpoint
+    displayName: "Target endpoint"
+    type: string
+    default: "prod"
+    values:
+      - prod
+      - preprod
+      - both
+
+  - name: recordCount
+    displayName: "Number of drift records to send"
+    type: number
+    default: 500
+
+variables:
+  # Pre-prod endpoint
+  preProdResourceGroup: "rg-white-orchid-8bx7s6"
+  preProdMlWorkspace:   "mlw-white-orchid-8bx7s6"
+  preProdEndpointName:  "ep-white-orchid-8bx7s6"
+  # Prod endpoint
+  prodResourceGroup:    "rg-white-orchid-prod-mlph0r"
+  prodMlWorkspace:      "mlw-white-orchid-prod-mlph0r"
+  prodEndpointName:     "ep-prod-white-orchid"
+
+stages:
+  - stage: SimulateDrift
+    displayName: "Send ${{ parameters.driftIntensity }} drift to ${{ parameters.targetEndpoint }}"
+    jobs:
+      - job: Simulate
+        displayName: "Generate and POST shifted records"
+        timeoutInMinutes: 30
+        steps:
+          - checkout: self
+
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: "3.9"
+
+          - script: pip install numpy pandas --quiet
+            displayName: "Install dependencies"
+
+          - task: AzureCLI@2
+            displayName: "Get endpoint credentials"
+            inputs:
+              azureSubscription: "sp-blue-moon"
+              scriptType: "bash"
+              scriptLocation: "inlineScript"
+              addSpnToEnvironment: true
+              inlineScript: |
+                set -e
+                az extension add -n ml -y
+
+                if [ "${{ parameters.targetEndpoint }}" = "prod" ] || [ "${{ parameters.targetEndpoint }}" = "both" ]; then
+                  PROD_URL=$(az ml online-endpoint show \
+                    --resource-group $(prodResourceGroup) \
+                    --workspace-name $(prodMlWorkspace) \
+                    --name $(prodEndpointName) \
+                    --query scoring_uri -o tsv)
+                  PROD_KEY=$(az ml online-endpoint get-credentials \
+                    --resource-group $(prodResourceGroup) \
+                    --workspace-name $(prodMlWorkspace) \
+                    --name $(prodEndpointName) \
+                    --query primaryKey -o tsv)
+                  echo "##vso[task.setvariable variable=PROD_URL]$PROD_URL"
+                  echo "##vso[task.setvariable variable=PROD_KEY;issecret=true]$PROD_KEY"
+                fi
+
+                if [ "${{ parameters.targetEndpoint }}" = "preprod" ] || [ "${{ parameters.targetEndpoint }}" = "both" ]; then
+                  PP_URL=$(az ml online-endpoint show \
+                    --resource-group $(preProdResourceGroup) \
+                    --workspace-name $(preProdMlWorkspace) \
+                    --name $(preProdEndpointName) \
+                    --query scoring_uri -o tsv)
+                  PP_KEY=$(az ml online-endpoint get-credentials \
+                    --resource-group $(preProdResourceGroup) \
+                    --workspace-name $(preProdMlWorkspace) \
+                    --name $(preProdEndpointName) \
+                    --query primaryKey -o tsv)
+                  echo "##vso[task.setvariable variable=PP_URL]$PP_URL"
+                  echo "##vso[task.setvariable variable=PP_KEY;issecret=true]$PP_KEY"
+                fi
+
+          - script: |
+              set -e
+              SCRIPT="$(System.DefaultWorkingDirectory)/machinelearning/white-orchid/simulate_drift.py"
+
+              if [ "${{ parameters.targetEndpoint }}" = "prod" ] || [ "${{ parameters.targetEndpoint }}" = "both" ]; then
+                echo ""
+                echo "========================================"
+                echo " PROD ENDPOINT — ${{ parameters.driftIntensity }} drift"
+                echo "========================================"
+                python "$SCRIPT" \
+                  --mode simulate \
+                  --intensity "${{ parameters.driftIntensity }}" \
+                  --count "${{ parameters.recordCount }}" \
+                  --endpoint-url "$(PROD_URL)" \
+                  --endpoint-key "$(PROD_KEY)"
+              fi
+
+              if [ "${{ parameters.targetEndpoint }}" = "preprod" ] || [ "${{ parameters.targetEndpoint }}" = "both" ]; then
+                echo ""
+                echo "========================================"
+                echo " PRE-PROD ENDPOINT — ${{ parameters.driftIntensity }} drift"
+                echo "========================================"
+                python "$SCRIPT" \
+                  --mode simulate \
+                  --intensity "${{ parameters.driftIntensity }}" \
+                  --count "${{ parameters.recordCount }}" \
+                  --endpoint-url "$(PP_URL)" \
+                  --endpoint-key "$(PP_KEY)"
+              fi
+            displayName: "Run drift simulation"
+            env:
+              PROD_KEY: $(PROD_KEY)
+              PP_KEY:   $(PP_KEY)
+
+          - script: |
+              echo ""
+              echo "Next steps:"
+              echo "  1. Azure ML Monitor runs daily — check AML Studio > Monitoring in ~24h"
+              echo "  2. App Insights drift alert evaluates every 30min — check Azure Monitor > Alerts"
+              echo "  3. If alert fires, run drift-remediation-pipeline.yml to retrain challenger"
+              echo ""
+              echo "To manually trigger remediation immediately:"
+              echo "  Run 'drift-remediation-pipeline.yml' in Azure Pipelines > Run pipeline"
+            displayName: "Post-simulation instructions"
+            condition: succeeded()
