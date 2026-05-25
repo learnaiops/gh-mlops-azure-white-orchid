@@ -47,7 +47,10 @@ stages:
           - checkout: self
 
           - script: |
-              sudo pip3 install numpy pandas --quiet --break-system-packages
+              set -e
+              python3 -m venv "$(System.DefaultWorkingDirectory)/.venv"
+              "$(System.DefaultWorkingDirectory)/.venv/bin/python" -m pip install --quiet --upgrade pip
+              "$(System.DefaultWorkingDirectory)/.venv/bin/python" -m pip install --quiet numpy pandas
             displayName: "Install dependencies"
 
           - task: AzureCLI@2
@@ -93,7 +96,7 @@ stages:
 
           - script: |
               set -e
-              PYTHON="python3"
+              PYTHON="$(System.DefaultWorkingDirectory)/.venv/bin/python"
               SCRIPT="$(System.DefaultWorkingDirectory)/machinelearning/white-orchid/simulate_drift.py"
 
               if [ "${{ parameters.targetEndpoint }}" = "prod" ] || [ "${{ parameters.targetEndpoint }}" = "both" ]; then
