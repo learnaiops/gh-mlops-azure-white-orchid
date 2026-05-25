@@ -47,7 +47,7 @@ stages:
           - checkout: self
 
           - script: |
-              pip3 install numpy pandas --quiet --user
+              sudo pip3 install numpy pandas --quiet --break-system-packages
             displayName: "Install dependencies"
 
           - task: AzureCLI@2
