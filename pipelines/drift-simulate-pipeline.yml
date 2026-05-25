@@ -47,8 +47,7 @@ stages:
           - checkout: self
 
           - script: |
-              python3 -m venv $(Agent.TempDirectory)/venv
-              $(Agent.TempDirectory)/venv/bin/pip install numpy pandas --quiet
+              pip3 install numpy pandas --quiet --user
             displayName: "Install dependencies"
 
           - task: AzureCLI@2
@@ -94,7 +93,7 @@ stages:
 
           - script: |
               set -e
-              PYTHON="$(Agent.TempDirectory)/venv/bin/python"
+              PYTHON="python3"
               SCRIPT="$(System.DefaultWorkingDirectory)/machinelearning/white-orchid/simulate_drift.py"
 
               if [ "${{ parameters.targetEndpoint }}" = "prod" ] || [ "${{ parameters.targetEndpoint }}" = "both" ]; then
