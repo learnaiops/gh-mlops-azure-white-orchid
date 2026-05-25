@@ -68,7 +68,6 @@ stages:
               scriptLocation: "inlineScript"
               inlineScript: |
                 set -e
-                az extension add -n ml -y
 
                 # Resolve App Insights name from the prod resource group
                 APPINSIGHTS_NAME=$(az monitor app-insights component list \
@@ -199,14 +198,12 @@ print(score)
         steps:
           - checkout: self
 
-          - script: |
-              python3 -m venv $(Agent.TempDirectory)/venv
-              $(Agent.TempDirectory)/venv/bin/pip install numpy pandas scikit-learn joblib --quiet
-            displayName: "Install Python dependencies"
+          # numpy/pandas/scikit-learn/joblib and the `az ml` extension are
+          # pre-installed on the blue-moon-hub-linux agents via infra/cloud-init.yaml.
 
           - script: |
               set -e
-              PYTHON="$(Agent.TempDirectory)/venv/bin/python"
+              PYTHON="python3"
               echo "Generating augmented training data (original + drift-shifted records)..."
 
               # Augment: generate 500 shifted records with pseudo-labels
@@ -253,7 +250,6 @@ PYEOF
               scriptLocation: "inlineScript"
               inlineScript: |
                 set -e
-                az extension add -n ml -y
 
                 # Upload augmented data to AML default datastore
                 STORAGE_ACCOUNT=$(az ml workspace show \
@@ -352,7 +348,6 @@ YAML
               scriptLocation: "inlineScript"
               inlineScript: |
                 set -e
-                az extension add -n ml -y
 
                 # Register challenger from job artifacts
                 az ml model create \
@@ -418,7 +413,6 @@ YAML
                     scriptLocation: "inlineScript"
                     inlineScript: |
                       set -e
-                      az extension add -n ml -y
 
                       echo "Deploying challenger v$(CHALLENGER_VERSION) at 10% traffic"
 
@@ -492,7 +486,6 @@ YAML
               scriptLocation: "inlineScript"
               inlineScript: |
                 set -e
-                az extension add -n ml -y
 
                 EP_KEY=$(az ml online-endpoint get-credentials \
                   --resource-group $(prodResourceGroup) \
@@ -666,7 +659,6 @@ print(rows[0][0] if rows else 'PROMOTE')
                     scriptLocation: "inlineScript"
                     inlineScript: |
                       set -e
-                      az extension add -n ml -y
 
                       echo "Promoting challenger v$(CHALLENGER_VERSION) → champion (dp-prod-blue)"
                       echo ""
@@ -745,7 +737,6 @@ print(rows[0][0] if rows else 'PROMOTE')
                     scriptLocation: "inlineScript"
                     inlineScript: |
                       set -e
-                      az extension add -n ml -y
 
                       echo "##[warning]Canary validation failed — rolling back to champion"
 

@@ -46,12 +46,8 @@ stages:
         steps:
           - checkout: self
 
-          - script: |
-              set -e
-              python3 -m venv "$(System.DefaultWorkingDirectory)/.venv"
-              "$(System.DefaultWorkingDirectory)/.venv/bin/python" -m pip install --quiet --upgrade pip
-              "$(System.DefaultWorkingDirectory)/.venv/bin/python" -m pip install --quiet numpy pandas
-            displayName: "Install dependencies"
+          # numpy/pandas and the `az ml` extension are pre-installed on the
+          # blue-moon-hub-linux agents via infra/cloud-init.yaml.
 
           - task: AzureCLI@2
             displayName: "Get endpoint credentials"
@@ -62,7 +58,6 @@ stages:
               addSpnToEnvironment: true
               inlineScript: |
                 set -e
-                az extension add -n ml -y
 
                 if [ "${{ parameters.targetEndpoint }}" = "prod" ] || [ "${{ parameters.targetEndpoint }}" = "both" ]; then
                   PROD_URL=$(az ml online-endpoint show \
@@ -96,7 +91,7 @@ stages:
 
           - script: |
               set -e
-              PYTHON="$(System.DefaultWorkingDirectory)/.venv/bin/python"
+              PYTHON="python3"
               SCRIPT="$(System.DefaultWorkingDirectory)/machinelearning/white-orchid/simulate_drift.py"
 
               if [ "${{ parameters.targetEndpoint }}" = "prod" ] || [ "${{ parameters.targetEndpoint }}" = "both" ]; then
