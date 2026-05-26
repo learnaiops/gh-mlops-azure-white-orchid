@@ -1,7 +1,7 @@
 # Scheduled query alert: fires when the production model's prediction
 # distribution drifts beyond safe thresholds.
 #
-# Detection logic (evaluated every 30 min over a 1h window):
+# Detection logic (evaluated every 5 min over a 5 min window):
 #   - avg risk_probability > 0.60  (baseline ~0.45 on training distribution)
 #   - OR avg BMI > 32              (training mean ~27)
 #   - OR avg age > 56              (training mean ~45)
@@ -30,8 +30,8 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "prediction_drift" {
 
   severity             = 1
   description          = "Prod model prediction distribution has shifted — possible data or concept drift. Investigate and run drift-remediation-pipeline if confirmed."
-  evaluation_frequency = "PT30M"
-  window_duration      = "PT1H"
+  evaluation_frequency = "PT5M"
+  window_duration      = "PT5M"
   enabled              = true
 
   criteria {
